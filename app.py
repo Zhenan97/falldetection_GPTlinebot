@@ -8,9 +8,14 @@ import openai
 import time
 import traceback
 import json
+import logging
 
 app = Flask(__name__)
 static_tmp_path = os.path.join(os.path.dirname(__file__), 'static', 'tmp')
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+
 # Channel Access Token
 line_bot_api = LineBotApi(os.getenv('CHANNEL_ACCESS_TOKEN'))
 # Channel Secret
@@ -59,13 +64,21 @@ def callback():
 
 # 監聽來自 /notify_fall 的 Post Request
 @app.route("/notify_fall", methods=['POST']) #使用 Flask 的路由裝飾器，定義了一個名為 /notify_fall 的路由，該路由只接受 POST 請求。
-def notify_fall(): 
+def notify_fall():
+    logging.info("Received /notify_fall request")
     if 'image' not in request.files:
+        logging.error("No image file provided in the request")
         return jsonify({"status": "error", "message": "No image file provided"}), 400
 
     image_file = request.files['image']
     image_path = os.path.join(static_tmp_path, 'fall_detected.jpg')
-    image_file.save(image_path)
+    try:
+        os.makedirs(static_tmp_path, exist_ok=True)
+        image_file.save(image_path)
+        logging.info(f"Image saved to {image_path}")
+    except Exception as e:
+        logging.error(f"Error saving image: {e}")
+        return jsonify({"status": "error", "message": "Error saving image"}), 500
 
     message = request.form.get("message", "Fall detected!") # 从请求的表单数据中获取 message
     user_ids = load_user_ids()  # 加載所有使用者的 user_id
@@ -79,7 +92,7 @@ def notify_fall():
             )
             line_bot_api.push_message(user_id, [TextSendMessage(text=message), image_message])
         except Exception as e:
-            print(f"Error sending message to {user_id}: {e}")
+            logging.error(f"Error sending message to {user_id}: {e}")
             errors.append(user_id)
 
     if errors:
@@ -108,7 +121,7 @@ def handle_message(event):
     except:
         print(traceback.format_exc())
         line_bot_api.reply_message(event.reply_token, TextSendMessage('你所使用的OPENAI API key額度可能已經超過，請於後台Log內確認錯誤訊息'))
-        
+
 @handler.add(PostbackEvent)
 def handle_postback(event):
     print(event.postback.data)
@@ -121,9 +134,8 @@ def welcome(event):
     name = profile.display_name
     message = TextSendMessage(text=f'{name}歡迎加入')
     line_bot_api.reply_message(event.reply_token, message)
-        
+
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
     os.makedirs(static_tmp_path, exist_ok=True)
     app.run(host='0.0.0.0', port=port)
-
