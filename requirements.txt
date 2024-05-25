@@ -1,9 +1,9 @@
 flask
 line-bot-sdk
-tensorflow==2.8.0
-opencv-python-headless==4.5.5.62
-mediapipe==0.8.9
-requests==2.26.0
-numpy==1.21.2
+tensorflow==2.16.1
+opencv-python-headless==4.9.0
+mediapipe==0.10.14
+requests==2.31.0
+numpy==1.26.4
 openai< 1.0.0
 gunicorn
