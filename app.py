@@ -1,4 +1,4 @@
-from flask import Flask, request, abort, jsonify
+from flask import Flask, request, abort, jsonify, send_file
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import *
@@ -176,16 +176,33 @@ def process_frame():
 
     return jsonify({"status": "success"}), 200
 
+#返回最新捕获的图像。
+@app.route("/latest_image", methods=['GET'])
+def latest_image():
+    try:
+        return send_file('latest_image.jpg', mimetype='image/jpeg')
+    except Exception as e:
+        return str(e), 500
+    
 # 处理使用者加入事件
 @handler.add(FollowEvent)
 def handle_follow(event):
-    user_id = event.source.user_id #從事件中獲取使用者的 user_id。
-    user_ids = load_user_ids() #用 load_user_ids() 函數讀取已記錄的使用者 ID。
+    user_id = event.source.user_id
+    user_ids = load_user_ids()
     if user_id not in user_ids:
         user_ids.append(user_id)
         save_user_ids(user_ids)
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text="歡迎加入跌倒警報系統")) #向新加入的使用者發送歡迎訊息。
-
+    buttons_template = ButtonsTemplate(
+        title='Welcome',
+        text='歡迎加入跌倒警報系統，請選擇操作',
+        actions=[
+            PostbackAction(label='查看即時影像', data='show_image')
+        ]
+    )
+    template_message = TemplateSendMessage(
+        alt_text='Buttons alt text', template=buttons_template)
+    line_bot_api.reply_message(event.reply_token, template_message)
+    
 # 处理消息
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
@@ -200,9 +217,14 @@ def handle_message(event):
         
 @handler.add(PostbackEvent)
 def handle_postback(event):
-    print(event.postback.data)
-
-@handler.add(MemberJoinedEvent)
+    data = event.postback.data
+    if data == 'show_image':
+        image_url = f"{request.url_root}latest_image"
+        line_bot_api.reply_message(
+            event.reply_token,
+            ImageSendMessage(original_content_url=image_url, preview_image_url=image_url)
+        )
+        
 def welcome(event):
     uid = event.joined.members[0].user_id
     gid = event.source.group_id
@@ -214,4 +236,3 @@ def welcome(event):
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-
