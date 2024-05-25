@@ -1,0 +1,9 @@
+flask
+line-bot-sdk
+tensorflow==2.8.0
+opencv-python-headless==4.5.5.62
+mediapipe==0.8.9
+requests==2.26.0
+numpy==1.21.2
+openai< 1.0.0
+gunicorn
