@@ -1,4 +1,4 @@
-from flask import Flask, request, abort, jsonify, send_file
+from flask import Flask, request, abort, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import *
@@ -12,8 +12,10 @@ from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 import mediapipe as mp
 
-app = Flask(__name__)
+app = Flask(__name__) #__name__ 是一個特定的 Python 變量，當前模塊的名稱會傳遞給 Flask 構造函數。這樣 Flask 可以定位應用程序的資源。
+#建立一個專門用於存儲臨時文件的文件夾。
 static_tmp_path = os.path.join(os.path.dirname(__file__), 'static', 'tmp')
+#確保路徑存在，如果不存在則創建它。
 os.makedirs(static_tmp_path, exist_ok=True)
 
 # Channel Access Token and Channel Secret
@@ -50,6 +52,7 @@ def GPT_response(text):
     answer = response['choices'][0]['text'].replace('。','')
     return answer
 
+#對幀序列進行填充或截斷
 def preprocess_frame_sequence(frame_sequence, max_frames=50):
     # 将帧序列填充/截断到max_frames长度
     padded_sequence = pad_sequences(frame_sequence, maxlen=max_frames, padding='post', truncating='post', dtype='float32')
@@ -61,9 +64,9 @@ def preprocess_frame_sequence(frame_sequence, max_frames=50):
 @app.route("/callback", methods=['POST'])
 def callback():
     # get X-Line-Signature header value
-    signature = request.headers['X-Line-Signature']
+    signature = request.headers['X-Line-Signature'] #這是 Line 平台用來驗證請求合法性的簽名。
     # get request body as text
-    body = request.get_data(as_text=True)
+    body = request.get_data(as_text=True) #獲取的是請求的原始數據
     app.logger.info("Request body: " + body)
     # handle webhook body
     try:
@@ -150,7 +153,7 @@ def process_frame():
             input_sequence = preprocess_frame_sequence([frame_sequence])
             # 直接使用 input_sequence 进行预测,通过 np.expand_dims 将其变为 (50, 33, 3, 3)
             prediction = model.predict(input_sequence)
-            fall_detected = prediction[0] > 0.5
+            fall_detected = prediction[0] > 0.2
 
             # 在帧上显示预测结果
             if fall_detected:
@@ -176,58 +179,33 @@ def process_frame():
 
     return jsonify({"status": "success"}), 200
 
-#返回最新捕获的图像。
-@app.route("/latest_image", methods=['GET'])
-def latest_image():
-    try:
-        return send_file('latest_image.jpg', mimetype='image/jpeg')
-    except Exception as e:
-        return str(e), 500
-    
 # 处理使用者加入事件
 @handler.add(FollowEvent)
 def handle_follow(event):
-    user_id = event.source.user_id
-    user_ids = load_user_ids()
+    user_id = event.source.user_id #從事件中獲取使用者的 user_id。
+    user_ids = load_user_ids() #用 load_user_ids() 函數讀取已記錄的使用者 ID。
     if user_id not in user_ids:
         user_ids.append(user_id)
         save_user_ids(user_ids)
-    buttons_template = ButtonsTemplate(
-        title='Welcome',
-        text='歡迎加入跌倒警報系統，請選擇操作',
-        actions=[
-            PostbackAction(label='查看即時影像', data='show_image')
-        ]
-    )
-    template_message = TemplateSendMessage(
-        alt_text='Buttons alt text', template=buttons_template)
-    line_bot_api.reply_message(event.reply_token, template_message)
-    
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text="歡迎加入跌倒警報系統")) #向新加入的使用者發送歡迎訊息。
+
 # 处理消息
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text
-    if msg == "查看即時影像":
-        # 回复一个按钮消息，点击按钮可以查看即时影像
-        buttons_template = ButtonsTemplate(
-            title='查看即时影像',
-            text='点击下方按钮查看即时影像',
-            actions=[
-                PostbackAction(label='显示即时影像', data='show_image')
-            ]
-        )
-        template_message = TemplateSendMessage(
-            alt_text='Buttons alt text', template=buttons_template)
-        line_bot_api.reply_message(event.reply_token, template_message)
-    else:
-        try:
-            GPT_answer = GPT_response(msg)
-            print(GPT_answer)
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(GPT_answer))
-        except:
-            print(traceback.format_exc())
-            line_bot_api.reply_message(event.reply_token, TextSendMessage('你所使用的OPENAI API key额度可能已经超过，请于后台Log内确认错误消息'))
+    try:
+        GPT_answer = GPT_response(msg)
+        print(GPT_answer)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(GPT_answer))
+    except:
+        print(traceback.format_exc())
+        line_bot_api.reply_message(event.reply_token, TextSendMessage('你所使用的OPENAI API key額度可能已經超過，請於後台Log內確認錯誤訊息'))
         
+@handler.add(PostbackEvent)
+def handle_postback(event):
+    print(event.postback.data)
+
+@handler.add(MemberJoinedEvent)
 def welcome(event):
     uid = event.joined.members[0].user_id
     gid = event.source.group_id
