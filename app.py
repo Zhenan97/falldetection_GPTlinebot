@@ -207,23 +207,26 @@ def handle_follow(event):
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text
-    try:
-        GPT_answer = GPT_response(msg)
-        print(GPT_answer)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(GPT_answer))
-    except:
-        print(traceback.format_exc())
-        line_bot_api.reply_message(event.reply_token, TextSendMessage('你所使用的OPENAI API key額度可能已經超過，請於後台Log內確認錯誤訊息'))
-        
-@handler.add(PostbackEvent)
-def handle_postback(event):
-    data = event.postback.data
-    if data == 'show_image':
-        image_url = f"{request.url_root}latest_image"
-        line_bot_api.reply_message(
-            event.reply_token,
-            ImageSendMessage(original_content_url=image_url, preview_image_url=image_url)
+    if msg == "查看即時影像":
+        # 回复一个按钮消息，点击按钮可以查看即时影像
+        buttons_template = ButtonsTemplate(
+            title='查看即时影像',
+            text='点击下方按钮查看即时影像',
+            actions=[
+                PostbackAction(label='显示即时影像', data='show_image')
+            ]
         )
+        template_message = TemplateSendMessage(
+            alt_text='Buttons alt text', template=buttons_template)
+        line_bot_api.reply_message(event.reply_token, template_message)
+    else:
+        try:
+            GPT_answer = GPT_response(msg)
+            print(GPT_answer)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(GPT_answer))
+        except:
+            print(traceback.format_exc())
+            line_bot_api.reply_message(event.reply_token, TextSendMessage('你所使用的OPENAI API key额度可能已经超过，请于后台Log内确认错误消息'))
         
 def welcome(event):
     uid = event.joined.members[0].user_id
