@@ -2,21 +2,29 @@ from flask import Flask, request, abort, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import *
-import tempfile, os
-import datetime
-import openai
-import time
-import traceback
+import os
 import json
+import openai
+import traceback
+import numpy as np
+import cv2
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+import mediapipe as mp
 
 app = Flask(__name__)
 static_tmp_path = os.path.join(os.path.dirname(__file__), 'static', 'tmp')
-# Channel Access Token
+os.makedirs(static_tmp_path, exist_ok=True)
+
+# Channel Access Token and Channel Secret
 line_bot_api = LineBotApi(os.getenv('CHANNEL_ACCESS_TOKEN'))
-# Channel Secret
 handler = WebhookHandler(os.getenv('CHANNEL_SECRET'))
+
 # OPENAI API Key初始化設定
 openai.api_key = os.getenv('OPENAI_API_KEY')
+
+# 加载训练好的模型
+model = load_model('fall_detection_model.h5')
 
 # 用來存儲使用者 user_id 的文件
 USER_ID_FILE = 'user_ids.json'
@@ -42,7 +50,14 @@ def GPT_response(text):
     answer = response['choices'][0]['text'].replace('。','')
     return answer
 
-# 監聽所有來自 /callback 的 Post Request
+def preprocess_frame_sequence(frame_sequence, max_frames=50):
+    # 将帧序列填充/截断到max_frames长度
+    padded_sequence = pad_sequences(frame_sequence, maxlen=max_frames, padding='post', truncating='post', dtype='float32')
+    # 添加额外的维度
+    padded_sequence = np.repeat(np.expand_dims(padded_sequence, axis=-1), 3, axis=-1)
+    return padded_sequence
+
+# 监听所有来自 /callback 的 Post Request
 @app.route("/callback", methods=['POST'])
 def callback():
     # get X-Line-Signature header value
@@ -57,9 +72,9 @@ def callback():
         abort(400)
     return 'OK'
 
-# 監聽來自 /notify_fall 的 Post Request
-@app.route("/notify_fall", methods=['POST']) #使用 Flask 的路由裝飾器，定義了一個名為 /notify_fall 的路由，該路由只接受 POST 請求。
-def notify_fall(): 
+# 监听来自 /notify_fall 的 Post Request
+@app.route("/notify_fall", methods=['POST'])
+def notify_fall():
     if 'image' not in request.files:
         return jsonify({"status": "error", "message": "No image file provided"}), 400
 
@@ -68,7 +83,7 @@ def notify_fall():
     image_file.save(image_path)
 
     message = request.form.get("message", "Fall detected!") # 从请求的表单数据中获取 message
-    user_ids = load_user_ids()  # 加載所有使用者的 user_id
+    user_ids = load_user_ids()  # 加载所有使用者的 user_id
 
     errors = []
     for user_id in user_ids:
@@ -87,7 +102,81 @@ def notify_fall():
     else:
         return jsonify({"status": "success"}), 200
 
-# 處理使用者加入事件
+# 处理从本地发送的帧
+@app.route("/process_frame", methods=['POST'])
+def process_frame():
+    if 'image' not in request.files:
+        return jsonify({"status": "error", "message": "No image file provided"}), 400
+
+    image_file = request.files['image']
+    image_bytes = image_file.read()
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    # 初始化MediaPipe姿态模型
+    mp_pose = mp.solutions.pose
+    pose = mp_pose.Pose()
+    mp_drawing = mp.solutions.drawing_utils
+
+    frame_sequence = []
+
+    # 将图像转换为RGB
+    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    #设置 image.flags.writeable = False 可以防止对图像数组的修改
+    image.flags.writeable = False
+
+    # 处理图像并检测姿态
+    results = pose.process(image)
+
+    image.flags.writeable = True
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+    # 绘制检测到的骨架
+    if results.pose_landmarks:
+        mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS) #mp_pose.POSE_CONNECTIONS：这是一个包含姿态关键点连接关系的常量，定义了关键点之间的连接。
+
+        # 提取骨架点
+        skeleton_points = np.array([[landmark.x, landmark.y, landmark.z] for landmark in results.pose_landmarks.landmark])
+        frame_sequence.append(skeleton_points)
+
+        # 如果序列长度超过max_frames，删除最旧的帧
+        if len(frame_sequence) > 50:
+            frame_sequence.pop(0)
+
+        # 如果序列长度足够，进行预测
+        if len(frame_sequence) == 50:
+            # 预处理帧序列
+            #原始输入数据是一个形状为 (50, 33, 3)
+            input_sequence = preprocess_frame_sequence([frame_sequence])
+            # 直接使用 input_sequence 进行预测,通过 np.expand_dims 将其变为 (50, 33, 3, 3)
+            prediction = model.predict(input_sequence)
+            fall_detected = prediction[0] > 0.5
+
+            # 在帧上显示预测结果
+            if fall_detected:
+                cv2.putText(image, "Fall Detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+                
+                # 保存跌倒图像
+                cv2.imwrite(os.path.join(static_tmp_path, 'fall_detected.jpg'), frame)
+                
+                # 发送通知到 Line Bot
+                message = "Fall detected!"
+                user_ids = load_user_ids()
+                for user_id in user_ids:
+                    try:
+                        image_message = ImageSendMessage(
+                            original_content_url=f"{request.url_root}static/tmp/fall_detected.jpg",
+                            preview_image_url=f"{request.url_root}static/tmp/fall_detected.jpg"
+                        )
+                        line_bot_api.push_message(user_id, [TextSendMessage(text=message), image_message])
+                    except Exception as e:
+                        print(f"Error sending message to {user_id}: {e}")
+            else:
+                cv2.putText(image, "No Fall", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+
+    return jsonify({"status": "success"}), 200
+
+# 处理使用者加入事件
 @handler.add(FollowEvent)
 def handle_follow(event):
     user_id = event.source.user_id #從事件中獲取使用者的 user_id。
@@ -97,7 +186,7 @@ def handle_follow(event):
         save_user_ids(user_ids)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text="歡迎加入跌倒警報系統")) #向新加入的使用者發送歡迎訊息。
 
-# 處理訊息
+# 处理消息
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text
@@ -124,5 +213,5 @@ def welcome(event):
         
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
-    os.makedirs(static_tmp_path, exist_ok=True)
     app.run(host='0.0.0.0', port=port)
+
